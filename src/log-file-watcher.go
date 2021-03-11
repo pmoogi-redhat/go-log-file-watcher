@@ -13,13 +13,11 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
-var (
-	debugOn = flag.Bool("debug", true, "enable debug logging")
-	address = flag.String("addr", ":2112", "listening addres")
-)
+
+var  debugOn bool = true
 
 func debug(f string, x ...interface{}) {
-	if *debugOn {
+	if debugOn {
 		log.Printf(f, x...)
 	}
 }
@@ -61,12 +59,19 @@ func NewFileWatcher(dir string) (*FileWatcher, error) {
 	}
 	for _, file := range files {
 		filename := file.Name()
-		filenameslice := strings.SplitN(filename,"_",3)
+		filenameslice := strings.Split(filename,"_")
+		if (len(filenameslice) == 3) {
 		namespace = filenameslice[0]
 		podname = filenameslice[1]
-		containerid = filenameslice[2]
+		containerid = strings.Trim(filenameslice[2],".log")
+		} else {
+                namespace="unknown"
+		podname="unknown"
+		containerid = "unknown"
+		}
 
-		debug("%v %v %v",namespace, podname, containerid)
+
+		debug("namespace = %v podname = %v containerid = %v",namespace, podname, containerid)
 		err := w.Update(filepath.Join(dir, file.Name()))
 		if err != nil {
 			debug("error in update: %v", err)
@@ -124,17 +129,24 @@ func (w FileWatcher) Watch() {
 }
 
 func main() {
-	flag.Parse()
-	dir := flag.Arg(0)
+        var dir string
+        var listeningport string
 
-	if dir == "" {
-		dir = "."
-	}
+	flag.StringVar(&dir, "logfilespathname", "/var/log/containers/", "Give the dirname where logfiles are going to be located")
+	flag.BoolVar(&debugOn, "debug", false, "Give debug option false or true")
+	flag.StringVar(&listeningport, "listeningport", ":2112", "Give the listening port address where metrics can be exposed to and listened by a running prometheus server")
+	flag.Parse()
+
+	debug("logfilespathname= %v",dir)
+	debug("debug option= %v",debugOn)
+	debug("listening port address= %v",listeningport)
+
+
 	w, err := NewFileWatcher(dir)
 	if err != nil {
 		log.Fatal(err)
 	}
 	go w.Watch()
 	http.Handle("/metrics", promhttp.Handler())
-	http.ListenAndServe(*address, nil)
+	http.ListenAndServe(listeningport, nil)
 }
