@@ -1,4 +1,4 @@
-FROM openshift/origin-release:golang-1.12 AS build
+FROM openshift/origin-release:golang-1.15 AS build
 RUN mkdir -p /go-log-file-watcher/src
 COPY ./src/log-file-watcher.go /go-log-file-watcher/src/.
 WORKDIR /go-log-file-watcher 
