@@ -19,6 +19,7 @@ import (
 
 
 var  debugOn bool = true
+var  containernames string = ""
 
 func debug(f string, x ...interface{}) {
 	if debugOn {
@@ -26,6 +27,21 @@ func debug(f string, x ...interface{}) {
 	}
 }
 
+func waitUntilFind(filename string) error {
+	for {
+		time.Sleep(1 * time.Second)
+		_, err := os.Stat(filename)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			} else {
+				return err
+			}
+		}
+		break
+	}
+	return nil
+}
 
 
 //////////////////////
@@ -57,13 +73,18 @@ func (w *FileWatcher) Event() (e Event, err error) {
 // EventTimeout returns the next event or os.ErrDeadlineExceeded if timeout is exceeded.
 func (w *FileWatcher) EventTimeout(timeout time.Duration) (e Event, err error) {
 	var ok bool
+
 	select {
+
 	case e, ok = <-w.watcher.Events:
 	case err, ok = <-w.watcher.Errors:
 	case <-time.After(timeout):
 		return Event{}, os.ErrDeadlineExceeded
 	}
+
+
 	switch {
+
 	case !ok:
 		return Event{}, io.EOF
 	case e.Op == Create:
@@ -82,9 +103,16 @@ func (w *FileWatcher) EventTimeout(timeout time.Duration) (e Event, err error) {
 		if info, err := os.Lstat(e.Name); err == nil {
 			if isSymlink(info) {
 				// Symlink target may have changed.
-			//	rawfilename := os.Readlink(e.Name)
+				rawfilename,err := os.Readlink(e.Name)
+				debug("rawfilename and err when Rename event issued %v %v",rawfilename,err)
 				_ = w.watcher.Remove(e.Name)
-				//os.Create(rawfilename)
+				// emptyfile, err := os.Create(rawfilename) 
+				 //debug("new file can't be created %v %v", emptyfile, err) 
+				 // The target file must exist before it gets added via its symlink otherwise watcher can't follow it when registered with a broken state
+				 errw := waitUntilFind(rawfilename)
+				 if errw != nil {
+				 fatal(errw)
+			         }
 				_ = w.watcher.Add(e.Name)
 			}
 		}
@@ -100,10 +128,10 @@ func (w *FileWatcher) Add(name string) error {
 	w.added[name] = true // Explicitly added, don't auto-Remove
 
 	// Scan directories for existing symlinks, we wont' get a Create for those.
-	if infos, err := ioutil.ReadDir(name); err == nil {
-		for _, info := range infos {
+	if files, err := ioutil.ReadDir(name); err == nil {
+		for _, info := range files {
 			if isSymlink(info) {
-				debug("Is a symlink")
+				debug("Is a symlink %v",info.Name())
 				_ = w.watcher.Add(filepath.Join(name, info.Name()))
 			}
 		}
@@ -130,7 +158,7 @@ func isSymlink(info os.FileInfo) bool {
 type FileWatcher struct {
 	watcher *fsnotify.Watcher
 	metrics *prometheus.CounterVec
-	sizes   map[string]float64
+	sizes map[string]float64
 	added map[string]bool
 }
 
@@ -140,8 +168,10 @@ func NewFileWatcher(dir string) (*FileWatcher, error) {
 	var podname string
 	var containerid string
 	var completepathoffile string
+	var err error
 
-	debug("watching %v", dir)
+	debug("dir to be watched for --> %v", dir)
+
 	w := &FileWatcher{
 		metrics: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "fluentd_input_status_total_bytes_logged",
@@ -151,26 +181,29 @@ func NewFileWatcher(dir string) (*FileWatcher, error) {
 		added: make(map[string]bool),
 	}
 	defer prometheus.Register(w.metrics)
-	var err error
+
 	if w.watcher, err = fsnotify.NewWatcher(); err == nil {
 		//defer w.watcher.Close()
 		err = w.Add(dir)
 	}
-	w.added[dir] = true
+
 
 	if err != nil {
 		return nil, err
 	}
+	
+	w.added[dir] = true
 
-	// Collect existing files, after starting watcher to avoid missing any.
+	// Scan through existing symlinks present in Dir, after starting watcher to avoid missing any.
 	// It's OK if we update the same file twice.
 	files, err := ioutil.ReadDir(dir)
 	if err != nil {
 		return nil, err
 	}
-	for _, file := range files {
-		filename := file.Name()
+	for _, info := range files {
+		filename := info.Name()
                 if (strings.Contains(filename,".log")) {
+                if (strings.Contains(filename,containernames)) {
 		filenameslice := strings.Split(filename,"_")
 		if (len(filenameslice) == 3) {
 		namespace = filenameslice[0]
@@ -185,16 +218,18 @@ func NewFileWatcher(dir string) (*FileWatcher, error) {
 
 		debug("namespace = %v podname = %v containerid = %v",namespace, podname, containerid)
 		
-		completepathoffile=filepath.Join(dir, file.Name())
+		completepathoffile=filepath.Join(dir, filename)
 		rawPath, err := filepath.EvalSymlinks(completepathoffile)
 		if (err == nil) {
+		// completepathoffile --> rawPath this symlink must not be in broken state
 		err := w.Update(completepathoffile)
 		debug("simpathname = %v rawpathname = %v",filename, rawPath)
 		if err != nil {
-			debug("error in update: %v", err)
+			debug("error in method Update call in creating FileWatcher : %v", err)
 		}
-	}
-	}
+	        }
+	} //only .log symlink files having container names in it
+        } //only .log symlink files
      }
 	return w, nil
 }
@@ -231,8 +266,11 @@ func (w FileWatcher) Watch() {
 	for {
 		e, err := w.Event()
 		fatal(err)
-		log.Print(e)
+		debug("Event notified for e.Name %v", e.Name)
+                if (strings.Contains(e.Name,".log")) {
+                if (strings.Contains(e.Name,containernames)) {
 		w.Update(e.Name)
+	        }} 
 	}
 }
 
@@ -240,16 +278,22 @@ func main() {
         var dir string
         var listeningport string
 
-	flag.StringVar(&dir, "logfilespathname", "/var/log/containers/", "Give the dirname where logfiles are going to be located")
-	flag.BoolVar(&debugOn, "debug", false, "Give debug option false or true")
-	flag.StringVar(&listeningport, "listeningport", ":2112", "Give the listening port address where metrics can be exposed to and listened by a running prometheus server")
+	//directory to be watched out where symlinks to all logs files are present e.g. /var/log/containers/
+	//debug option true or false
+	//listening port where this go-app push prometheus registered metrics for further collected or reading by end prometheus server
+	flag.StringVar(&dir, "logfilespathname", "/var/log/containers/", "Give the dirname where logfiles are going to be located, default /var/log/containers/")
+	flag.StringVar(&containernames,"containernames","log-stress","Given container names e.g. xxx yyy zzz only their log files are followed default is low-stress")
+	flag.BoolVar(&debugOn, "debug", false, "Give debug option false or true, default set to true")
+	flag.StringVar(&listeningport, "listeningport", ":2112", "Give the listening port where metrics can be exposed to and listened by a running prometheus server, default is :2112")
 	flag.Parse()
 
 	debug("logfilespathname= %v",dir)
+	debug("containernames= %v",containernames)
 	debug("debug option= %v",debugOn)
 	debug("listening port address= %v",listeningport)
 
 
+	//Get new watcher
 	w, err := NewFileWatcher(dir)
 	if err != nil {
 		debug("NewFileWatcher error")
