@@ -88,19 +88,24 @@ func (w *FileWatcher) EventTimeout(timeout time.Duration) (e Event, err error) {
 	case !ok:
 		return Event{}, io.EOF
 	case e.Op == Create:
+                if (strings.Contains(e.Name,containernames)) {
 		debug("e.Op is Create for e.Name %v", e.Name)
 		if info, err := os.Lstat(e.Name); err == nil {
 			if isSymlink(info) {
 				debug("watcher.Add %v",e.Name)
 				_ = w.watcher.Add(e.Name)
 			}
-		}
+		}}
 	case e.Op == Remove:
 		debug("e.Op is Remove for e.Name %v", e.Name)
 		w.watcher.Remove(e.Name)
+                if (strings.Contains(e.Name,containernames)) {
+		w.watcher.Add(e.Name)
+	        }
 	case e.Op == Chmod || e.Op == Rename:
-		debug("e.Op - Rename or Chmod for %v %v",e.Op, e.Name)
 		if info, err := os.Lstat(e.Name); err == nil {
+                        if (strings.Contains(e.Name,containernames)) {
+		        debug("e.Op - Rename or Chmod for %v %v",e.Op, e.Name)
 			if isSymlink(info) {
 				// Symlink target may have changed.
 				rawfilename,err := os.Readlink(e.Name)
@@ -109,11 +114,12 @@ func (w *FileWatcher) EventTimeout(timeout time.Duration) (e Event, err error) {
 				// emptyfile, err := os.Create(rawfilename) 
 				 //debug("new file can't be created %v %v", emptyfile, err) 
 				 // The target file must exist before it gets added via its symlink otherwise watcher can't follow it when registered with a broken state
-				 errw := waitUntilFind(rawfilename)
-				 if errw != nil {
-				 fatal(errw)
-			         }
+				 //errw := waitUntilFind(rawfilename)
+				 //if errw != nil {
+				 //fatal(errw)
+			         //}
 				_ = w.watcher.Add(e.Name)
+			      }
 			}
 		}
 	}
@@ -130,11 +136,15 @@ func (w *FileWatcher) Add(name string) error {
 	// Scan directories for existing symlinks, we wont' get a Create for those.
 	if files, err := ioutil.ReadDir(name); err == nil {
 		for _, info := range files {
+                if (strings.Contains(info.Name(),containernames)) {
 			if isSymlink(info) {
-				debug("Is a symlink %v",info.Name())
+			debug("Adding symlink with container name %v %v", info.Name(),containernames)
 				_ = w.watcher.Add(filepath.Join(name, info.Name()))
 			}
-		}
+		} else { //if container name is present
+			_ = w.watcher.Remove(filepath.Join(name, info.Name()))
+		} // if container name not present remove those log files from watcher list
+	 }
 	}
 	return nil
 }
@@ -266,9 +276,9 @@ func (w FileWatcher) Watch() {
 	for {
 		e, err := w.Event()
 		fatal(err)
-		debug("Event notified for e.Name %v", e.Name)
                 if (strings.Contains(e.Name,".log")) {
                 if (strings.Contains(e.Name,containernames)) {
+		debug("Event notified for e.Name %v call w.Update", e.Name)
 		w.Update(e.Name)
 	        }} 
 	}
